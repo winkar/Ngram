@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Tri-gram Language Model Based on Wikipedia</title>
+<meta name="author" content="(陈一鸣 陈钧衍)"/>
+<link rel="stylesheet" href="http://cdn.jsdelivr.net/reveal.js/3.0.0/css/reveal.css"/>
+<link rel="stylesheet" href="http://cdn.jsdelivr.net/reveal.js/3.0.0/css/theme/moon.css" id="theme"/>
+<link rel="stylesheet" href=""/>
+<!-- If the query includes 'print-pdf', include the PDF print sheet -->
+<script>
+    if( window.location.search.match( /print-pdf/gi ) ) {
+        var link = document.createElement( 'link' );
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = 'http://cdn.jsdelivr.net/reveal.js/3.0.0/css/print/pdf.css';
+        document.getElementsByTagName( 'head' )[0].appendChild( link );
+    }
+</script>
+<script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+<section id="sec-title-slide">
+<h1>Tri-gram Language Model Based on Wikipedia</h1>
+<h2>陈一鸣 陈钧衍</h2>
+<h2><a href="mailto:"></a></h2>
+<h2></h2>
+</section>
+<section id="table-of-contents">
+<div id="table-of-contents">
+<h2>Table of Contents</h2>
+<div id="text-table-of-contents">
+<ul>
+<li><a href="#/slide-orgheadline1">1. 概述</a></li>
+<li><a href="#/slide-orgheadline5">2. 提取 Tri-gram</a>
+<ul>
+<li><a href="#/slide-orgheadline2">2.1. 思路</a></li>
+<li><a href="#/slide-orgheadline3">2.2. 问题</a></li>
+<li><a href="#/slide-orgheadline4">2.3. Source Code</a></li>
+</ul>
+</li>
+<li><a href="#/slide-orgheadline10">3. 计算概率</a>
+<ul>
+<li><a href="#/slide-orgheadline6">3.1. 思路</a></li>
+<li><a href="#/slide-orgheadline7">3.2. 问题</a></li>
+<li><a href="#/slide-orgheadline8">3.3. 部分结果</a></li>
+<li><a href="#/slide-orgheadline9">3.4. Source Code</a></li>
+</ul>
+</li>
+<li><a href="#/slide-orgheadline14">4. Smoothing</a>
+<ul>
+<li><a href="#/slide-orgheadline11">4.1. 思路</a></li>
+<li><a href="#/slide-orgheadline12">4.2. 部分结果</a></li>
+<li><a href="#/slide-orgheadline13">4.3. Source Code</a></li>
+</ul>
+</li>
+<li><a href="#/slide-orgheadline18">5. Bonus</a>
+<ul>
+<li><a href="#/slide-orgheadline15">5.1. 思路</a></li>
+<li><a href="#/slide-orgheadline16">5.2. Demo</a></li>
+<li><a href="#/slide-orgheadline17">5.3. Source Code</a></li>
+</ul>
+</li>
+<li><a href="#/slide-orgheadline19">6. 分工说明</a></li>
+</ul>
+</div>
+</div>
+</section>
+
+<section>
+<section id="slide-orgheadline1">
+<h2 id="orgheadline1"><span class="section-number-2">1</span> 概述</h2>
+<ul>
+<li>这个项目是基于 Wikipedia 55GB 的语料库，处理得出 Tri-gram 集合及概率的脚本代码</li>
+<li>项目大致分为三步和一个 Bonus ：
+<dl>
+<dt>Phase 1</dt><dd>提取 Tri-gram</dd>
+<dt>Phase 2</dt><dd>计算概率 \(P(W_3|W_1, W_2)\)</dd>
+<dt>Phase 3</dt><dd>Smoothing</dd>
+<dt>Bonus</dt><dd>利用 Spark SQL 响应一个二元词组，按出现概率大小返回第三个词的 Socket 程序</dd>
+
+</dl></li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orgheadline5">
+<h2 id="orgheadline5"><span class="section-number-2">2</span> 提取 Tri-gram</h2>
+<p>
+这个步骤使用 Hadoop 完成
+</p>
+</section>
+<section id="slide-orgheadline2">
+<h3 id="orgheadline2"><span class="section-number-3">2.1</span> 思路</h3>
+<ul>
+<li>Mapper
+<ul>
+<li>将 Wikipedia 的 xml 文件按照 <code>&lt;text&gt;</code> 标签切分读入</li>
+<li>去除 <code>#, !</code> 开头的注释行</li>
+<li>用非数字和字母字符将读入的行切分成句子</li>
+<li>提取 Tri-gram 供 Reducer 统计</li>
+
+</ul></li>
+<li>Reducer
+<ul>
+<li>计算 \(N(W_1, W_2, W_3)\) （以下用 \(N_3\) 指代）</li>
+<li>计算 \(N(W_1, W_2)\) （以下用 \(N_2\) 指代）</li>
+<li>两者相除得 \(P(W_3|W_1, W_2)\)</li>
+
+</ul></li>
+
+</ul>
+</section>
+<section id="slide-orgheadline3">
+<h3 id="orgheadline3"><span class="section-number-3">2.2</span> 问题</h3>
+<ul>
+<li>在 Reduce 时遇到了 <code>running beyond physical memory limits</code> 错误
+<ul>
+<li>可能原因是将 reduce 时的数据都用一台机器处理，自然会超出内存</li>
+<li>也因为这个错误
+<ul>
+<li>这个阶段的 Reduce 改用 cat 将 Map 结果导出，以备后续处理</li>
+<li>之后两个阶段均用 Spark 完成</li>
+
+</ul></li>
+
+</ul></li>
+
+</ul>
+</section>
+<section id="slide-orgheadline4">
+<h3 id="orgheadline4"><span class="section-number-3">2.3</span> Source Code</h3>
+<ul>
+<li><p>
+Command
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-sh">hadoop jar /usr/hadoop-2.7.1/share/hadoop/tools/lib/hadoop-streaming-2.7.1.jar <span style="color: #70c0b1;">\</span>
+       <span style="color: #70c0b1;">'-Dstream.recordreader.begin=&lt;text xml:space="preserve"&gt;'</span> <span style="color: #70c0b1;">\</span>
+       <span style="color: #70c0b1;">'-Dstream.recordreader.end=&lt;/text&gt;'</span> <span style="color: #70c0b1;">\</span>
+       -inputreader <span style="color: #70c0b1;">"StreamXmlRecordReader"</span> <span style="color: #70c0b1;">\</span>
+       -input /users/rocks1/enwiki-20151102-pages-articles-multistream.xml <span style="color: #70c0b1;">\</span>
+       -mapper mapper.py <span style="color: #70c0b1;">\</span>
+       -file mapper.py <span style="color: #70c0b1;">\</span>
+       -reducer cat <span style="color: #70c0b1;">\</span>
+       -output /users/rocks1/12307130174/wiki_triword00 <span style="color: #70c0b1;">\</span>
+</pre>
+</div></li>
+<li><p>
+Mapper
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">!/usr/bin/env python</span>
+<span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">coding=utf-8</span>
+
+<span style="color: #b9ca4a;">import</span> sys
+<span style="color: #b9ca4a;">import</span> re
+<span style="color: #b9ca4a;">import</span> HTMLParser
+
+<span style="color: #e7c547;">parser</span> = HTMLParser.HTMLParser()
+
+<span style="color: #b9ca4a;">if</span> <span style="color: #c397d8;">__name__</span> == <span style="color: #70c0b1;">'__main__'</span>:
+    <span style="color: #b9ca4a;">for</span> line <span style="color: #b9ca4a;">in</span> sys.stdin:
+        <span style="color: #e7c547;">origin_line</span> = line
+        <span style="color: #e7c547;">line</span> = line.decode(<span style="color: #70c0b1;">'utf-8'</span>)
+        <span style="color: #e7c547;">line</span> = parser.unescape(line)
+
+        <span style="color: #b9ca4a;">if</span> line.startswith(<span style="color: #70c0b1;">'#'</span>) <span style="color: #b9ca4a;">or</span> line.startswith(<span style="color: #70c0b1;">'!'</span>):
+            <span style="color: #b9ca4a;">continue</span>
+
+        <span style="color: #e7c547;">sentences</span> = re.split(r<span style="color: #70c0b1;">"[^0-9a-zA-Z\s]"</span>, line)
+        <span style="color: #e7c547;">sentences</span> = [x.strip() <span style="color: #b9ca4a;">for</span> x <span style="color: #b9ca4a;">in</span> sentences <span style="color: #b9ca4a;">if</span> <span style="color: #c397d8;">len</span>(x.strip().split()) &gt;= 3]
+
+        <span style="color: #b9ca4a;">for</span> sentence <span style="color: #b9ca4a;">in</span> sentences:
+            <span style="color: #e7c547;">sentence</span> = sentence.split()
+            <span style="color: #b9ca4a;">for</span> tri_word <span style="color: #b9ca4a;">in</span> [sentence[i:i + 3] <span style="color: #b9ca4a;">for</span> i <span style="color: #b9ca4a;">in</span> <span style="color: #c397d8;">range</span>(<span style="color: #c397d8;">len</span>(sentence) - 3)]:
+                <span style="color: #e7c547;">tri_word</span> = <span style="color: #c397d8;">map</span>(<span style="color: #c397d8;">unicode</span>.lower, tri_word)
+                <span style="color: #b9ca4a;">print</span> tri_word[0], tri_word[1], tri_word[2]
+</pre>
+</div></li>
+<li><p>
+Reducer
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">!/usr/bin/env python</span>
+
+<span style="color: #b9ca4a;">import</span> sys
+<span style="color: #b9ca4a;">from</span> collections <span style="color: #b9ca4a;">import</span> defaultdict
+
+<span style="color: #e7c547;">tri_count</span> = defaultdict(<span style="color: #c397d8;">int</span>)
+<span style="color: #e7c547;">bi_count</span> = defaultdict(<span style="color: #c397d8;">int</span>)
+
+<span style="color: #b9ca4a;">if</span> <span style="color: #c397d8;">__name__</span> == <span style="color: #70c0b1;">'__main__'</span>:
+    <span style="color: #b9ca4a;">for</span> line <span style="color: #b9ca4a;">in</span> sys.stdin:
+        <span style="color: #e7c547;">tri_word</span> = <span style="color: #c397d8;">tuple</span>(line.split())
+        <span style="color: #e7c547;">bi_word</span> = <span style="color: #c397d8;">tuple</span>(tri_word[:2])
+        <span style="color: #e7c547;">tri_count</span>[tri_word] += 1
+        <span style="color: #e7c547;">bi_count</span>[bi_word] += 1
+    <span style="color: #b9ca4a;">for</span> key <span style="color: #b9ca4a;">in</span> tri_count:
+        <span style="color: #e7c547;">tri_word</span> = key
+        <span style="color: #e7c547;">bi_word</span> = key[:2]
+        <span style="color: #b9ca4a;">print</span> bi_count[bi_word], tri_count[tri_word], key[0], key[1], key[2]
+</pre>
+</div></li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orgheadline10">
+<h2 id="orgheadline10"><span class="section-number-2">3</span> 计算概率</h2>
+<p>
+该阶段用 Spark 完成
+</p>
+</section>
+<section id="slide-orgheadline6">
+<h3 id="orgheadline6"><span class="section-number-3">3.1</span> 思路</h3>
+<ul>
+<li>读入 Phase 1 产生的 Tri-gram 输出文件</li>
+<li>以 Tri-gram 为 Key 计算个数 \(N_3\)
+<ul>
+<li>再用 Map 操作改为以 Bi-gram 为 Key</li>
+
+</ul></li>
+<li>以 Bi-gram 为 Key 计算个数 \(N_2\)</li>
+<li>将前两项 Join 得临时 RDD T</li>
+<li>将 T Map 一遍得出概率 \(N_3/N_2\)</li>
+
+</ul>
+</section>
+<section id="slide-orgheadline7">
+<h3 id="orgheadline7"><span class="section-number-3">3.2</span> 问题</h3>
+<ul>
+<li>也遇到了内存太小的问题
+<dl>
+<dt>默认内存为 1G/Node</dt><dd>耗时近 3 小时，因内存不足 Failed</dd>
+<dt>增大为 4G/Node</dt><dd>耗时 2.5 小时，跑出结果</dd>
+<dt>增大为 20G/Node</dt><dd>耗时 16 分钟，跑出结果</dd>
+
+</dl></li>
+
+</ul>
+</section>
+<section id="slide-orgheadline8">
+<h3 id="orgheadline8"><span class="section-number-3">3.3</span> 部分结果</h3>
+<pre class="example">
+((u'zavetnoye', u'accounts', u'for'), 1.0)
+((u'metric', u'contexts', u'in'), 1.0)
+((u'jati', u'panchayat', u'or'), 1.0)
+((u'new', u'paseo', u'stadium'), 1.0)
+((u'cesena', u'on', u'30'), 0.055555555555555552)
+((u'cesena', u'on', u'his'), 0.055555555555555552)
+((u'cesena', u'on', u'10'), 0.055555555555555552)
+((u'cesena', u'on', u'loan'), 0.055555555555555552)
+((u'cesena', u'on', u'21'), 0.055555555555555552)
+((u'cesena', u'on', u'7'), 0.1111111111111111)
+((u'cesena', u'on', u'1'), 0.055555555555555552)
+((u'cesena', u'on', u'the'), 0.055555555555555552)
+((u'cesena', u'on', u'5'), 0.055555555555555552)
+((u'cesena', u'on', u'24'), 0.1111111111111111)
+((u'cesena', u'on', u'20'), 0.055555555555555552)
+((u'cesena', u'on', u'2'), 0.055555555555555552)
+((u'cesena', u'on', u'a'), 0.1111111111111111)
+((u'cesena', u'on', u'circa'), 0.055555555555555552)
+((u'cesena', u'on', u'october'), 0.055555555555555552)
+((u'collon', u'has', u'a'), 0.33333333333333331)
+((u'collon', u'has', u'conducted'), 0.33333333333333331)
+((u'collon', u'has', u'served'), 0.33333333333333331)
+</pre>
+</section>
+<section id="slide-orgheadline9">
+<h3 id="orgheadline9"><span class="section-number-3">3.4</span> Source Code</h3>
+<ul>
+<li><p>
+Command
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-sh">spark-submit --master spark://10.141.200.205:7077 <span style="color: #70c0b1;">\</span>
+             --executor-memory 4G <span style="color: #70c0b1;">\</span>
+             spark.py
+</pre>
+</div></li>
+<li><p>
+Script
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #b9ca4a;">from</span> pyspark <span style="color: #b9ca4a;">import</span> SparkContext, SparkConf
+
+<span style="color: #e7c547;">conf</span> = SparkConf().setAppName(<span style="color: #70c0b1;">'TriWordCountProbability'</span>)
+<span style="color: #e7c547;">sc</span> = SparkContext(conf=conf)
+
+<span style="color: #e7c547;">tri_words</span> = tri_word_file.<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> line: <span style="color: #c397d8;">tuple</span>(line.strip().split(<span style="color: #70c0b1;">" "</span>)))
+
+<span style="color: #e7c547;">tri_counts</span> = tri_words.<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> tri_word: (tri_word, 1)) \
+                      .reduceByKey(<span style="color: #b9ca4a;">lambda</span> a, b: a + b) \
+                      .<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> word_count: (word_count[0][:2], (word_count[0][2], word_count[1])))
+tri_counts.cache()
+
+<span style="color: #e7c547;">bi_counts</span> = tri_counts.<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> tri_word: (tri_word[0], tri_word[1][1])) \
+                      .reduceByKey(<span style="color: #b9ca4a;">lambda</span> a, b: a + b)
+
+<span style="color: #e7c547;">counts_join</span> = tri_counts.join(bi_counts)
+
+<span style="color: #b9ca4a;">def</span> <span style="color: #e78c45;">get_probability</span>(key_value):
+    <span style="color: #b9ca4a;">return</span> ((key_value[0] + (key_value[1][0][0],)), <span style="color: #c397d8;">float</span>(key_value[1][0][1])/<span style="color: #c397d8;">float</span>(key_value[1][1]))
+
+<span style="color: #e7c547;">probabilities</span> = counts_join.<span style="color: #c397d8;">map</span>(get_probability)
+
+probabilities.saveAsTextFile(<span style="color: #70c0b1;">"hdfs://cluster.hpc.org:9000/users/rocks1/12307130174/spark_probabilities"</span>)
+</pre>
+</div></li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orgheadline14">
+<h2 id="orgheadline14"><span class="section-number-2">4</span> Smoothing</h2>
+<p>
+该阶段用 Spark 完成
+</p>
+</section>
+<section id="slide-orgheadline11">
+<h3 id="orgheadline11"><span class="section-number-3">4.1</span> 思路</h3>
+<ul>
+<li>求出 Bi-gram 的种数 B</li>
+<li>在 Phase 2 的基础上计算 Smoothing 后的结果
+<ul>
+<li>分子（Tri-gram 数） + 1</li>
+<li>分母（Bi-gram 数） + B</li>
+
+</ul></li>
+
+</ul>
+</section>
+<section id="slide-orgheadline12">
+<h3 id="orgheadline12"><span class="section-number-3">4.2</span> 部分结果</h3>
+<pre class="example">
+((u'cesena', u'on', u'30'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'his'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'2'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'7'), 4.1554527733554139e-08)
+((u'cesena', u'on', u'1'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'a'), 4.1554527733554139e-08)
+((u'cesena', u'on', u'circa'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'october'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'5'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'the'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'10'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'21'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'loan'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'20'), 2.7703018489036092e-08)
+((u'cesena', u'on', u'24'), 4.1554527733554139e-08)
+((u'r', u'revenue', u'stamps'), 2.7703025012424115e-08)
+((u'jati', u'panchayat', u'or'), 2.7703025012424115e-08)
+((u'regulares', u'logia', u'de'), 2.7703025012424115e-08)
+((u'over', u'103000', u'cannons'), 2.7703025012424115e-08)
+((u'be', u'eyed', u'skeptically'), 2.7703023093780259e-08)
+((u'be', u'eyed', u'by'), 2.7703023093780259e-08)
+((u'be', u'eyed', u'for'), 2.7703023093780259e-08)
+((u'be', u'eyed', u'with'), 4.1554534640670391e-08)
+((u'be', u'eyed', u'carefully'), 2.7703023093780259e-08)
+</pre>
+</section>
+<section id="slide-orgheadline13">
+<h3 id="orgheadline13"><span class="section-number-3">4.3</span> Source Code</h3>
+<ul>
+<li><p>
+统计 Bi-gram 种数
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #b9ca4a;">from</span> pyspark <span style="color: #b9ca4a;">import</span> SparkContext, SparkConf
+
+<span style="color: #e7c547;">conf</span> = SparkConf().setAppName(<span style="color: #70c0b1;">'WikiBiWordCount'</span>)
+<span style="color: #e7c547;">sc</span> = SparkContext(conf=conf)
+
+<span style="color: #e7c547;">tri_word_file</span> = sc.textFile(<span style="color: #70c0b1;">'hdfs://cluster.hpc.org:9000/users/rocks1/12307130174/wiki_triword00/part-00000'</span>)
+
+<span style="color: #e7c547;">counts</span> = tri_word_file.<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> line: <span style="color: #c397d8;">tuple</span>(line.strip().split(<span style="color: #70c0b1;">" "</span>)[:2])) \
+                      .<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> word: (word, 1)) \
+                      .groupByKey() \
+                      .count()
+
+<span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"bi_word counts: "</span>, counts
+</pre>
+</div></li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orgheadline18">
+<h2 id="orgheadline18"><span class="section-number-2">5</span> Bonus</h2>
+<p>
+该阶段用 Spark SQL 完成
+</p>
+</section>
+<section id="slide-orgheadline15">
+<h3 id="orgheadline15"><span class="section-number-3">5.1</span> 思路</h3>
+<ul>
+<li>在服务器端收集 Phase 3 的结果</li>
+<li>创建 DataFrame</li>
+<li>将 DataFrame Cache 在内存中</li>
+<li>开启 Socket 服务，接收客户端请求并返回结果</li>
+
+</ul>
+</section>
+<section id="slide-orgheadline16">
+<h3 id="orgheadline16"><span class="section-number-3">5.2</span> Demo</h3>
+
+<div class="figure">
+<p><img src="./img/word_predict.gif" alt="word_predict.gif" />
+</p>
+</div>
+
+</section>
+<section id="slide-orgheadline17">
+<h3 id="orgheadline17"><span class="section-number-3">5.3</span> Source Code</h3>
+<ul>
+<li><p>
+Server
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #b9ca4a;">from</span> pyspark <span style="color: #b9ca4a;">import</span> SparkContext, SparkConf
+<span style="color: #b9ca4a;">from</span> pyspark.sql <span style="color: #b9ca4a;">import</span> SQLContext, Row
+
+
+<span style="color: #e7c547;">conf</span> = SparkConf().setAppName(<span style="color: #70c0b1;">'TriWordCount'</span>)
+<span style="color: #e7c547;">sc</span> = SparkContext(conf=conf)
+<span style="color: #e7c547;">sqlContext</span> = SQLContext(sc)
+
+<span style="color: #e7c547;">trigrams</span> = sc.textFile(<span style="color: #70c0b1;">'hdfs:///users/rocks1/12307130174/spark_probabilities_smoothed01/*'</span>)
+
+<span style="color: #e7c547;">trigrams</span> = trigrams.<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> line: <span style="color: #c397d8;">eval</span>(line)) \
+                        .<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> t: Row(word0 = t[0][0], word1=t[0][1], word2=t[0][2], prob=t[1]))
+
+<span style="color: #e7c547;">schemaTrigram</span>= sqlContext.createDataFrame(trigrams)
+schemaTrigram.registerTempTable(<span style="color: #70c0b1;">"trigram"</span>)
+
+sqlContext.cacheTable(<span style="color: #70c0b1;">"trigram"</span>)
+<span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">schemaTrigram.cache()</span>
+
+<span style="color: #b9ca4a;">import</span> socket
+<span style="color: #e7c547;">s</span> = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+s.bind((<span style="color: #70c0b1;">""</span>,54899))
+s.listen(5)
+
+<span style="color: #b9ca4a;">while</span> <span style="color: #7aa6da;">True</span>:
+    <span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">word0, word1 = raw_input("&gt;").split()</span>
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"in loop"</span>
+    <span style="color: #e7c547;">client</span>, <span style="color: #e7c547;">_</span> = s.accept()
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"acccpeted"</span>
+    <span style="color: #e7c547;">recved</span> = client.recv(1024)
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"recived"</span>
+    <span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">word0, word1 = "change", "the"</span>
+    <span style="color: #e7c547;">word0</span>, <span style="color: #e7c547;">word1</span> = recved.strip().split()
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"word received"</span>
+    <span style="color: #e7c547;">query</span> = <span style="color: #70c0b1;">"SELECT word2 FROM trigram WHERE word0='%s' AND word1='%s' ORDER BY prob LIMIT 100"</span> % (word0,word1)
+    <span style="color: #b9ca4a;">print</span> query
+    <span style="color: #e7c547;">candidate_words</span> = sqlContext.sql(query).<span style="color: #c397d8;">map</span>(<span style="color: #b9ca4a;">lambda</span> p : p.word2)
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"query make"</span>
+
+    client.send(<span style="color: #c397d8;">str</span>(<span style="color: #70c0b1;">' '</span>.join(candidate_words.collect()) + <span style="color: #70c0b1;">'\n'</span>))
+    <span style="color: #b9ca4a;">print</span> <span style="color: #70c0b1;">"sended"</span>
+</pre>
+</div></li>
+<li><p>
+Client
+</p>
+<div class="org-src-container">
+
+<pre  class="src src-python"><span style="color: #969896; font-style: italic;">#</span><span style="color: #969896; font-style: italic;">!/usr/bin/env python</span>
+
+<span style="color: #b9ca4a;">import</span> socket
+<span style="color: #e7c547;">s</span> = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+s.connect((<span style="color: #70c0b1;">""</span>, 54899))
+
+<span style="color: #b9ca4a;">import</span> sys
+s.send(sys.argv[1]+ <span style="color: #70c0b1;">'  '</span> + sys.argv[2] + <span style="color: #70c0b1;">"\n"</span>)
+
+<span style="color: #b9ca4a;">print</span> s.recv(1024)
+s.close()
+</pre>
+</div></li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orgheadline19">
+<h2 id="orgheadline19"><span class="section-number-2">6</span> 分工说明</h2>
+<ul>
+<li>陈一鸣
+<ul>
+<li>Phase 1</li>
+<li>Phase 2</li>
+
+</ul></li>
+<li>陈钧衍
+<ul>
+<li>Phase 3</li>
+<li>Bonus</li>
+
+</ul></li>
+
+</ul>
+</section>
+</section>
+</div>
+</div>
+<script src="http://cdn.jsdelivr.net/reveal.js/3.0.0/lib/js/head.min.js"></script>
+<script src="http://cdn.jsdelivr.net/reveal.js/3.0.0/js/reveal.js"></script>
+
+<script>
+// Full list of configuration options available here:
+// https://github.com/hakimel/reveal.js#configuration
+Reveal.initialize({
+
+controls: true,
+progress: true,
+history: false,
+center: true,
+slideNumber: true,
+rollingLinks: false,
+keyboard: true,
+overview: true,
+
+theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+transition: Reveal.getQueryHash().transition || 'default', // default/cube/page/concave/zoom/linear/fade/none
+transitionSpeed: 'default',
+multiplex: {
+    secret: '', // null if client
+    id: '', // id, obtained from socket.io server
+    url: '' // Location of socket.io server
+},
+
+// Optional libraries used to extend on reveal.js
+dependencies: [
+ { src: 'http://cdn.jsdelivr.net/reveal.js/3.0.0/lib/js/classList.js', condition: function() { return !document.body.classList; } },
+ { src: 'http://cdn.jsdelivr.net/reveal.js/3.0.0/plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+ { src: 'http://cdn.jsdelivr.net/reveal.js/3.0.0/plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+ { src: 'http://cdn.jsdelivr.net/reveal.js/3.0.0/plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+ { src: 'http://cdn.jsdelivr.net/reveal.js/3.0.0/plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } }]
+});
+</script>
+</body>
+</html>
